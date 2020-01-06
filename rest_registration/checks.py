@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Type
 
 from django.conf import settings
@@ -5,7 +6,6 @@ from django.contrib.auth import get_user_model
 from django.core.checks import register
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Model
-from rest_framework.authentication import TokenAuthentication
 from rest_framework.settings import api_settings
 
 from rest_registration.decorators import simple_check
@@ -29,6 +29,7 @@ class ErrorCode:  # pylint: disable=too-few-public-methods
     NO_AUTH_INSTALLED = 'E008'
     DRF_INCOMPATIBLE_DJANGO_AUTH_BACKEND = 'E009'
     LOGIN_FIELDS_NOT_UNIQUE = 'E010'
+    INVALID_AUTH_TOKEN_MANAGER_CLASS = 'E11'
 
 
 class WarningCode:  # pylint: disable=too-few-public-methods
@@ -101,30 +102,49 @@ def verification_from_check() -> bool:
 @register()
 @simple_check(
     'LOGIN_RETRIEVE_TOKEN is set but'
-    ' TokenAuthentication is not in DEFAULT_AUTHENTICATION_CLASSES',
+    ' the matching token authentication class is not'
+    ' in DEFAULT_AUTHENTICATION_CLASSES',
     ErrorCode.NO_TOKEN_AUTH_CONFIG,
 )
 def token_auth_config_check() -> bool:
     return implies(
-        registration_settings.LOGIN_RETRIEVE_TOKEN,
-        any(
-            issubclass(cls, TokenAuthentication)
-            for cls in api_settings.DEFAULT_AUTHENTICATION_CLASSES
-        )
+        _is_auth_installed() and registration_settings.LOGIN_RETRIEVE_TOKEN,
+        _is_auth_token_manager_auth_class_enabled
     )
 
 
 @register()
 @simple_check(
     'LOGIN_RETRIEVE_TOKEN is set but'
-    ' rest_framework.authtoken is not in INSTALLED_APPS',
+    ' the matching django app is not in INSTALLED_APPS',
     ErrorCode.NO_TOKEN_AUTH_INSTALLED,
 )
 def token_auth_installed_check() -> bool:
     return implies(
-        registration_settings.LOGIN_RETRIEVE_TOKEN,
-        'rest_framework.authtoken' in settings.INSTALLED_APPS,
+        _is_auth_installed() and registration_settings.LOGIN_RETRIEVE_TOKEN,
+        _is_auth_token_manager_app_name_installed,
     )
+
+
+def _is_auth_token_manager_auth_class_enabled() -> bool:
+    auth_token_manager = _get_auth_token_manager()  # noqa: E501 type: rest_registration.auth_token_managers.AbstractAuthTokenManager
+    auth_cls = auth_token_manager.get_authentication_class()
+    return any(
+        issubclass(cls, auth_cls)
+        for cls in api_settings.DEFAULT_AUTHENTICATION_CLASSES
+    )
+
+
+def _is_auth_token_manager_app_name_installed() -> bool:
+    auth_token_manager = _get_auth_token_manager()  # noqa: E501 type: rest_registration.auth_token_managers.AbstractAuthTokenManager
+    app_name = auth_token_manager.get_app_name()
+    return app_name in settings.INSTALLED_APPS
+
+
+def _get_auth_token_manager():
+    auth_token_manager_cls = registration_settings.AUTH_TOKEN_MANAGER_CLASS
+    auth_token_manager = auth_token_manager_cls()
+    return auth_token_manager
 
 
 @register()
@@ -233,6 +253,81 @@ def _are_login_fields_unique() -> bool:
     return all(
         is_model_field_unique(user_meta.get_field(field_name))
         for field_name in get_user_login_field_names())
+
+
+@register()
+@simple_check(
+    'AUTH_TOKEN_MANAGER_CLASS is not proper subclass'
+    ' of AbstractAuthTokenManager',
+    ErrorCode.INVALID_AUTH_TOKEN_MANAGER_CLASS,
+)
+def valid_auth_token_manager_class_proper_subclass_check() -> bool:
+    return implies(
+        _is_auth_installed(),
+        _is_auth_token_manager_proper_subclass,
+    )
+
+
+@register()
+@simple_check(
+    'AUTH_TOKEN_MANAGER_CLASS is not implementing'
+    ' method get_authentication_class',
+    ErrorCode.INVALID_AUTH_TOKEN_MANAGER_CLASS,
+)
+def valid_auth_token_manager_class_get_authentication_class_check() -> bool:
+    return implies(
+        _is_auth_installed(),
+        partial(
+            _is_auth_token_manager_class_implementing_method,
+            'get_authentication_class'),
+    )
+
+
+@register()
+@simple_check(
+    'AUTH_TOKEN_MANAGER_CLASS is not implementing method get_app_name',
+    ErrorCode.INVALID_AUTH_TOKEN_MANAGER_CLASS,
+)
+def valid_auth_token_manager_class_get_app_name_check() -> bool:
+    return implies(
+        _is_auth_installed(),
+        partial(
+            _is_auth_token_manager_class_implementing_method,
+            'get_app_name'),
+    )
+
+
+@register()
+@simple_check(
+    'AUTH_TOKEN_MANAGER_CLASS is not implementing method provide_token',
+    ErrorCode.INVALID_AUTH_TOKEN_MANAGER_CLASS,
+)
+def valid_auth_token_manager_class_provide_token_check() -> bool:
+    return implies(
+        _is_auth_installed(),
+        partial(
+            _is_auth_token_manager_class_implementing_method,
+            'provide_token'),
+    )
+
+
+def _is_auth_token_manager_proper_subclass() -> bool:
+    from rest_registration.auth_token_managers import AbstractAuthTokenManager  # noqa: E501 pylint: disable=import-outside-toplevel
+
+    cls = registration_settings.AUTH_TOKEN_MANAGER_CLASS
+
+    return (
+        issubclass(cls, AbstractAuthTokenManager)
+        and cls != AbstractAuthTokenManager)
+
+
+def _is_auth_token_manager_class_implementing_method(method_name: str) -> bool:
+    from rest_registration.auth_token_managers import AbstractAuthTokenManager  # noqa: E501 pylint: disable=import-outside-toplevel
+
+    cls = registration_settings.AUTH_TOKEN_MANAGER_CLASS
+    cls_method = getattr(cls, method_name, None)
+    abstract_method = getattr(AbstractAuthTokenManager, method_name)
+    return cls_method is not abstract_method
 
 
 def _is_auth_installed() -> bool:

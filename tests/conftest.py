@@ -4,6 +4,7 @@ import pytest
 from django.conf import settings
 from django.test.utils import override_settings
 
+from tests.helpers.api_views import APIViewRequestFactory
 from tests.helpers.common import create_test_user
 from tests.helpers.constants import (
     REGISTER_VERIFICATION_URL,
@@ -84,6 +85,11 @@ def settings_with_coreapi_autoschema():
 
 
 @pytest.fixture()
+def api_factory(api_view_provider):
+    return APIViewRequestFactory(api_view_provider)
+
+
+@pytest.fixture()
 def email_change():
     return ValueChange(
         old_value='testuser1@example.com',
@@ -92,10 +98,27 @@ def email_change():
 
 
 @pytest.fixture()
-def user(db, email_change):
+def password_change():
+    return ValueChange(
+        old_value='testpassword',
+        new_value='testpassword2',
+    )
+
+
+@pytest.fixture()
+def user(db, email_change, password_change):
     return create_test_user(
         username='testusername',
-        email=email_change.old_value)
+        email=email_change.old_value,
+        password=password_change.old_value,
+    )
+
+
+@pytest.fixture()
+def user_token_obj(user):
+    from rest_framework.authtoken.models import Token  # noqa: E501 pylint: disable=import-outside-toplevel
+
+    return Token.objects.create(user=user)
 
 
 @pytest.fixture()
